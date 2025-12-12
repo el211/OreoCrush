@@ -6,16 +6,15 @@ import java.awt.*;
 public class Main {
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
-            OreoCrushGame game = new OreoCrushGame();
-            ScoreboardPanel hud = new ScoreboardPanel();
-            game.setScoreboard(hud);
+            OreoCrushGame board = new OreoCrushGame();
+            ScoreboardPanel scoreboard = new ScoreboardPanel();
+            board.setScoreboard(scoreboard);
 
             JPanel root = new JPanel(new BorderLayout(12, 12));
             root.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
             root.setBackground(new Color(8, 12, 18));
-
-            root.add(game, BorderLayout.CENTER);
-            root.add(hud, BorderLayout.EAST);
+            root.add(board, BorderLayout.CENTER);
+            root.add(scoreboard, BorderLayout.EAST);
 
             JFrame frame = new JFrame("Oreo Crush");
             frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);

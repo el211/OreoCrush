@@ -21,6 +21,21 @@ public class OreoCrushGame extends JPanel {
 
     private static final int MOVE_LIMIT_BASE = 20;
 
+    // ====== LEVEL TRANSITION (fade + intro voice + new music) ======
+    private boolean levelTransition = false;
+    private float bgFade = 0f;                 // 0 = normal, 1 = fully black overlay
+    private long transitionStartMs = 0L;
+
+    private static final int FADE_OUT_MS = 350;
+    private static final int FADE_IN_MS  = 350;
+
+    // MUST match your intro voice length (ex: 2.1s). Example path:
+    // /music/level2_intro.wav  (voice "Oreo Level 2" + sting)
+    private static final int INTRO_DELAY_MS = 2100;
+
+    private boolean introPlayed = false;
+    private boolean loopStarted = false;
+
     // ====== PIECE TYPES ======
     private static final int CLASSIC  = 0;
     private static final int CHOCO    = 1;
@@ -54,6 +69,7 @@ public class OreoCrushGame extends JPanel {
 
     // ====== TEXTURES ======
     private final BufferedImage[] cookieImages = new BufferedImage[TYPE_COUNT];
+    private BufferedImage blockedTileImage;
 
     // ====== GAME GRID ======
     private final Piece[][] grid = new Piece[BOARD_SIZE][BOARD_SIZE];
@@ -90,7 +106,12 @@ public class OreoCrushGame extends JPanel {
         setBackground(new Color(12, 18, 32));
 
         loadTextures();
+
+        // Initial level setup (difficulty + blocked + background)
         applyLevelSettings();
+        // Start level 1 music immediately (no intro on game start, optional)
+        audio.playMusicLoop("/music/level" + level + ".wav");
+
         initBoardNoMatches();
         setupMouse();
 
@@ -109,7 +130,9 @@ public class OreoCrushGame extends JPanel {
         cookieImages[CHOCO]    = loadImage("/assets/cookie_choco.png");
         cookieImages[VANILLA]  = loadImage("/assets/cookie_vanilla.png");
         cookieImages[SPRINKLE] = loadImage("/assets/cookie_sprinkle.png");
-        cookieImages[TNT]      = loadImage("/assets/cookie_tnt.png");
+        cookieImages[TNT]      = loadImage("/assets/cookie_tnt.png"); // add this file
+        blockedTileImage = loadImage("/assets/blocked_tile.png"); // you'll send this later
+
     }
 
     private BufferedImage loadImage(String path) {
@@ -126,7 +149,7 @@ public class OreoCrushGame extends JPanel {
         }
     }
 
-    // ====== LEVEL SETTINGS ======
+    // ====== LEVEL SETTINGS (difficulty + blocked + background ONLY, no loop music here) ======
     private void applyLevelSettings() {
         // you currently have 4 normal oreos (0..3). keep TNT special
         unlockedTypes = Math.min(4, 4 + (level - 1));
@@ -134,7 +157,7 @@ public class OreoCrushGame extends JPanel {
         // fewer moves each level, but never below 8
         moves = Math.max(8, MOVE_LIMIT_BASE - (level - 1));
 
-        // MUCH longer progression
+        // progression curve
         targetScore = 1200 + (int) (Math.pow(level, 1.55) * 900);
 
         // TNT refill chance scales
@@ -150,9 +173,6 @@ public class OreoCrushGame extends JPanel {
         // background per level
         bgImage = loadImage("/backgrounds/bg_level" + level + ".png");
         if (bgImage == null) bgImage = loadImage("/backgrounds/bg_level1.png");
-
-        // music per level
-        audio.playMusicLoop("/music/level" + level + ".wav");
     }
 
     private void clearBlocked() {
@@ -337,7 +357,6 @@ public class OreoCrushGame extends JPanel {
         boolean hasRow = false;
         boolean hasCol = false;
 
-        // any horizontal run?
         for (int r = 0; r < BOARD_SIZE; r++) {
             int run = 0;
             for (int c = 0; c < BOARD_SIZE; c++) {
@@ -350,7 +369,6 @@ public class OreoCrushGame extends JPanel {
             if (run >= 3) hasRow = true;
         }
 
-        // any vertical run?
         for (int c = 0; c < BOARD_SIZE; c++) {
             int run = 0;
             for (int r = 0; r < BOARD_SIZE; r++) {
@@ -369,6 +387,12 @@ public class OreoCrushGame extends JPanel {
 
     // ====== GAME TICK ======
     private void tick() {
+        // Level transition has priority (fade out -> intro voice -> new music -> fade in)
+        if (levelTransition) {
+            tickLevelTransition();
+            return;
+        }
+
         switch (animState) {
             case SWAPPING:
                 tickSwap();
@@ -435,7 +459,6 @@ public class OreoCrushGame extends JPanel {
             Piece pa = swapAnim.pa;
             Piece pb = swapAnim.pb;
 
-            // commit swap in grid
             setPiece(r1, c1, pb);
             setPiece(r2, c2, pa);
             snapPiece(pb);
@@ -448,9 +471,7 @@ public class OreoCrushGame extends JPanel {
 
             MatchResult mr = findMatches();
             if (mr == null) {
-                // revert swap visually
                 startSwap(new Point(c1, r1), new Point(c2, r2), true);
-                // restore grid immediately so animation moves back correctly
                 setPiece(r1, c1, pa);
                 setPiece(r2, c2, pb);
                 snapPiece(pa);
@@ -458,15 +479,12 @@ public class OreoCrushGame extends JPanel {
                 return;
             }
 
-            // successful move
             audio.playSfx("/sfx/swap.wav");
             moves--;
             if (moves <= 0) audio.playSfx("/sfx/gameover.wav");
 
-            // reset combo for the start of this move; chain reactions will increment it
             combo = 0;
 
-            // spawn TNT rewards
             for (Point p : mr.spawnTNT) {
                 int rr = p.y, cc = p.x;
                 if (isInsideBoard(rr, cc) && grid[rr][cc] != null) grid[rr][cc].type = TNT;
@@ -502,9 +520,7 @@ public class OreoCrushGame extends JPanel {
             }
         }
 
-        // each chain reaction increases combo multiplier
         combo++;
-
         animState = AnimState.CLEARING;
     }
 
@@ -529,7 +545,7 @@ public class OreoCrushGame extends JPanel {
                 }
             }
 
-            int mult = Math.min(5, combo); // caps at x5
+            int mult = Math.min(5, combo);
             scoreThisLevel += cleared * 10 * mult;
 
             startFall();
@@ -548,25 +564,21 @@ public class OreoCrushGame extends JPanel {
 
         for (int c = 0; c < BOARD_SIZE; c++) {
 
-            // gather existing pieces in this column (skip blocked + null)
             List<Piece> kept = new ArrayList<>();
             for (int r = BOARD_SIZE - 1; r >= 0; r--) {
                 if (blocked[r][c]) continue;
                 if (grid[r][c] != null) kept.add(grid[r][c]);
             }
 
-            // build list of target rows (non-blocked) from bottom to top
             List<Integer> targets = new ArrayList<>();
             for (int r = BOARD_SIZE - 1; r >= 0; r--) {
                 if (!blocked[r][c]) targets.add(r);
             }
 
-            // clear all non-blocked cells in this column first
             for (int r = 0; r < BOARD_SIZE; r++) {
                 if (!blocked[r][c]) grid[r][c] = null;
             }
 
-            // place kept pieces into lowest targets
             int idx = 0;
             for (; idx < kept.size() && idx < targets.size(); idx++) {
                 int tr = targets.get(idx);
@@ -575,7 +587,6 @@ public class OreoCrushGame extends JPanel {
                 setPiece(tr, c, p);
             }
 
-            // fill remaining targets with new pieces spawning above
             for (; idx < targets.size(); idx++) {
                 int tr = targets.get(idx);
 
@@ -621,7 +632,6 @@ public class OreoCrushGame extends JPanel {
                 }
             }
 
-            // chain reaction
             MatchResult mr = findMatches();
             if (mr != null) {
                 for (Point p : mr.spawnTNT) {
@@ -632,12 +642,16 @@ public class OreoCrushGame extends JPanel {
                 return;
             }
 
-            // level up
+            // LEVEL UP -> fade out -> voice intro -> new loop music -> fade in
             if (scoreThisLevel >= targetScore) {
                 level++;
                 audio.playSfx("/sfx/levelup.wav");
-                applyLevelSettings();
-                initBoardNoMatches();
+
+                // preload next background (optional)
+                bgImage = loadImage("/backgrounds/bg_level" + level + ".png");
+                if (bgImage == null) bgImage = loadImage("/backgrounds/bg_level1.png");
+
+                startLevelTransition();
                 return;
             }
 
@@ -672,9 +686,7 @@ public class OreoCrushGame extends JPanel {
             }
         }
 
-        // TNT action starts a new "move", reset combo
         combo = 0;
-
         animState = AnimState.EXPLODING;
     }
 
@@ -710,11 +722,16 @@ public class OreoCrushGame extends JPanel {
         addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
+                // block user input during level transition
+                if (levelTransition) return;
+
                 if (animState != AnimState.IDLE) return;
 
                 if (moves <= 0) {
                     level = 1;
                     applyLevelSettings();
+                    audio.stopMusic();
+                    audio.playMusicLoop("/music/level" + level + ".wav");
                     initBoardNoMatches();
                     repaint();
                     return;
@@ -731,14 +748,12 @@ public class OreoCrushGame extends JPanel {
 
                 Piece clicked = grid[r][c];
 
-                // TNT click -> explode
                 if (clicked.type == TNT) {
                     startExplode(r, c);
                     selected = null;
                     return;
                 }
 
-                // normal select/swap flow
                 if (selected == null) {
                     selected = new Point(c, r);
                 } else {
@@ -763,6 +778,65 @@ public class OreoCrushGame extends JPanel {
         startSwap(a, b, false);
     }
 
+    // ====== LEVEL TRANSITION IMPLEMENTATION ======
+    private void startLevelTransition() {
+        levelTransition = true;
+        transitionStartMs = nowMs;
+        bgFade = 0f;
+
+        introPlayed = false;
+        loopStarted = false;
+
+        // stop any running music now (hard cut; you can replace with fade if you want)
+        audio.stopMusic();
+
+        // prevent visual selection from sticking
+        selected = null;
+
+        // ensure we are not in the middle of animations
+        animState = AnimState.IDLE;
+    }
+
+    private void tickLevelTransition() {
+        long dt = nowMs - transitionStartMs;
+
+        // 1) fade out to black
+        if (dt <= FADE_OUT_MS) {
+            bgFade = clamp01(dt / (float) FADE_OUT_MS);
+            return;
+        }
+
+        // 2) play intro voice ONCE after fade-out
+        if (!introPlayed) {
+            // IMPORTANT: file should be named like /music/level2_intro.wav
+            audio.playSfx("/music/level" + level + "_intro.wav");
+            introPlayed = true;
+            return;
+        }
+
+        // 3) after intro duration, apply new settings, rebuild board, start looping music
+        if (!loopStarted && dt >= (FADE_OUT_MS + INTRO_DELAY_MS)) {
+            applyLevelSettings();
+            initBoardNoMatches();
+            audio.playMusicLoop("/music/level" + level + ".wav");
+            loopStarted = true;
+            return;
+        }
+
+        // 4) fade back in from black
+        if (loopStarted) {
+            long fadeInStart = FADE_OUT_MS + INTRO_DELAY_MS;
+            long fadeInDt = dt - fadeInStart;
+
+            bgFade = 1f - clamp01(fadeInDt / (float) FADE_IN_MS);
+
+            if (fadeInDt >= FADE_IN_MS) {
+                bgFade = 0f;
+                levelTransition = false;
+            }
+        }
+    }
+
     // ====== RENDER ======
     @Override
     protected void paintComponent(Graphics g) {
@@ -782,20 +856,25 @@ public class OreoCrushGame extends JPanel {
         }
 
         // slots
+        // draw ONLY blocked cells (no background squares for normal cells)
         for (int r = 0; r < BOARD_SIZE; r++) {
             for (int c = 0; c < BOARD_SIZE; c++) {
+                if (!blocked[r][c]) continue;
+
                 int x = c * TILE_SIZE;
                 int y = r * TILE_SIZE;
 
-                g2.setColor(new Color(30, 41, 59));
-                g2.fillRoundRect(x + 4, y + 4, TILE_SIZE - 8, TILE_SIZE - 8, 12, 12);
-
-                if (blocked[r][c]) {
-                    g2.setColor(new Color(0, 0, 0, 140));
+                if (blockedTileImage != null) {
+                    // draw your custom blocked texture
+                    g2.drawImage(blockedTileImage, x, y, TILE_SIZE, TILE_SIZE, null);
+                } else {
+                    // fallback: subtle dark tile (not pure black)
+                    g2.setColor(new Color(10, 10, 14, 160));
                     g2.fillRoundRect(x + 4, y + 4, TILE_SIZE - 8, TILE_SIZE - 8, 12, 12);
                 }
             }
         }
+
 
         // pieces
         for (int r = 0; r < BOARD_SIZE; r++) {
@@ -841,7 +920,7 @@ public class OreoCrushGame extends JPanel {
         }
 
         // selection highlight
-        if (selected != null && animState == AnimState.IDLE) {
+        if (selected != null && animState == AnimState.IDLE && !levelTransition) {
             int x = selected.x * TILE_SIZE;
             int y = selected.y * TILE_SIZE;
             g2.setColor(new Color(248, 250, 252));
@@ -866,6 +945,15 @@ public class OreoCrushGame extends JPanel {
             String t2 = "Click to restart.";
             int w2 = g2.getFontMetrics().stringWidth(t2);
             g2.drawString(t2, (getWidth() - w2) / 2, getHeight() / 2 + 20);
+        }
+
+        // fade overlay (used during level transition)
+        if (bgFade > 0f) {
+            Composite old = g2.getComposite();
+            g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, clamp01(bgFade)));
+            g2.setColor(Color.BLACK);
+            g2.fillRect(0, 0, getWidth(), getHeight());
+            g2.setComposite(old);
         }
 
         g2.dispose();
