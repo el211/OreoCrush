@@ -546,7 +546,10 @@ public class OreoCrushGame extends JPanel {
             }
 
             int mult = Math.min(5, combo);
-            scoreThisLevel += cleared * 10 * mult;
+            float levelMult = getScoreMultiplier();
+
+            scoreThisLevel += (int) (cleared * 10 * mult * levelMult);
+
 
             startFall();
         }
@@ -661,34 +664,55 @@ public class OreoCrushGame extends JPanel {
 
     // ====== EXPLOSION (TNT CLICK) ======
     private static class ExplodeAnim {
-        List<Point> cells = new ArrayList<>();
+        Queue<Point> pending = new ArrayDeque<>();
+        Set<Point> visited = new HashSet<>();
         List<Piece> pieces = new ArrayList<>();
         long startMs;
     }
+
 
     private void startExplode(int r, int c) {
         audio.playSfx("/sfx/tnt.wav");
 
         explodeAnim = new ExplodeAnim();
         explodeAnim.startMs = nowMs;
-        explodeAnim.cells.clear();
-        explodeAnim.pieces.clear();
 
-        for (int dr = -1; dr <= 1; dr++) {
-            for (int dc = -1; dc <= 1; dc++) {
-                int rr = r + dr, cc = c + dc;
-                if (!isInsideBoard(rr, cc)) continue;
-                if (blocked[rr][cc]) continue;
-                if (grid[rr][cc] == null) continue;
+        explodeAnim.pending.add(new Point(c, r));
+        explodeAnim.visited.add(new Point(c, r));
 
-                explodeAnim.cells.add(new Point(cc, rr));
-                explodeAnim.pieces.add(grid[rr][cc]);
-            }
-        }
-
+        collectExplosionPieces();
         combo = 0;
         animState = AnimState.EXPLODING;
     }
+    private void collectExplosionPieces() {
+        explodeAnim.pieces.clear();
+
+        while (!explodeAnim.pending.isEmpty()) {
+            Point center = explodeAnim.pending.poll();
+
+            for (int dr = -1; dr <= 1; dr++) {
+                for (int dc = -1; dc <= 1; dc++) {
+                    int rr = center.y + dr;
+                    int cc = center.x + dc;
+
+                    if (!isInsideBoard(rr, cc)) continue;
+                    if (blocked[rr][cc]) continue;
+                    if (grid[rr][cc] == null) continue;
+
+                    Point p = new Point(cc, rr);
+                    Piece piece = grid[rr][cc];
+
+                    if (piece.type == TNT && !explodeAnim.visited.contains(p)) {
+                        explodeAnim.visited.add(p);
+                        explodeAnim.pending.add(p);
+                    }
+
+                    explodeAnim.pieces.add(piece);
+                }
+            }
+        }
+    }
+
 
     private void tickExplode() {
         float t = clamp01((nowMs - explodeAnim.startMs) / (float) EXPLODE_MS);
@@ -701,21 +725,31 @@ public class OreoCrushGame extends JPanel {
 
         if (t >= 1f) {
             int cleared = 0;
-            for (Point cell : explodeAnim.cells) {
-                int rr = cell.y, cc = cell.x;
-                if (grid[rr][cc] != null) {
-                    setPiece(rr, cc, null);
-                    cleared++;
+
+            for (Piece p : explodeAnim.pieces) {
+                for (int r = 0; r < BOARD_SIZE; r++) {
+                    for (int c = 0; c < BOARD_SIZE; c++) {
+                        if (grid[r][c] == p) {
+                            setPiece(r, c, null);
+                            cleared++;
+                        }
+                    }
                 }
             }
 
             moves--;
             if (moves <= 0) audio.playSfx("/sfx/gameover.wav");
 
-            scoreThisLevel += cleared * 12;
+            float levelMult = getScoreMultiplier();
+            scoreThisLevel += (int) (cleared * 12 * levelMult);
             startFall();
         }
     }
+    private float getScoreMultiplier() {
+        if (level >= 2) return 1.5f;
+        return 1f;
+    }
+
 
     // ====== INPUT ======
     private void setupMouse() {
