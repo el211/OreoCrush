@@ -18,6 +18,7 @@ public class OreoCrushGame extends JPanel {
     private static final int BOARD_SIZE = 8;
     private static final int TILE_SIZE = 60;
     private static final int CANVAS_SIZE = BOARD_SIZE * TILE_SIZE;
+    private static final int MAX_BACKGROUND_LEVEL = 7;
 
     private static final int BASE_COLOR_COUNT = 4;
 
@@ -98,7 +99,7 @@ public class OreoCrushGame extends JPanel {
                 case CLEAR_BLOCKERS:
                     return "Break every frosting layer on the board.";
                 case TRIGGER_SPECIALS:
-                    return "Trigger " + target + " special cookies.";
+                    return "Create " + target + " special cookies (match 4+).";
                 case SCORE:
                 default:
                     return "Reach " + target + " score.";
@@ -167,6 +168,7 @@ public class OreoCrushGame extends JPanel {
         int specialTriggers;
         String banner;
         boolean strongClear;
+        String sfxHint;
     }
 
     private static class SwapAnim {
@@ -241,8 +243,11 @@ public class OreoCrushGame extends JPanel {
     private boolean levelTransition;
     private boolean introPlayed;
     private boolean loopStarted;
+    private boolean transitionLevelLoaded;
     private float bgFade;
     private long transitionStartMs;
+    private long delayedMusicStartMs = -1L;
+    private int delayedMusicLevel = -1;
 
     private boolean levelSummary;
     private long summaryStartMs;
@@ -259,6 +264,7 @@ public class OreoCrushGame extends JPanel {
 
     public OreoCrushGame() {
         setPreferredSize(new Dimension(CANVAS_SIZE, CANVAS_SIZE));
+        setMinimumSize(new Dimension(CANVAS_SIZE, CANVAS_SIZE));
         setBackground(new Color(12, 18, 32));
 
         loadTextures();
@@ -266,7 +272,7 @@ public class OreoCrushGame extends JPanel {
 
         nowMs = System.currentTimeMillis();
         loadLevel(level);
-        audio.playMusicLoop(loopMusicPathFor(level));
+        queueLevelVoiceAndMusic(level);
         setupMouse();
 
         timer = new Timer(1000 / 60, e -> {
@@ -302,7 +308,7 @@ public class OreoCrushGame extends JPanel {
         pendingLevel = -1;
         audio.stopMusic();
         loadLevel(level);
-        audio.playMusicLoop(loopMusicPathFor(level));
+        queueLevelVoiceAndMusic(level);
         pushHud();
     }
 
@@ -318,7 +324,7 @@ public class OreoCrushGame extends JPanel {
         pendingLevel = -1;
         audio.stopMusic();
         loadLevel(clamped);
-        audio.playMusicLoop(loopMusicPathFor(level));
+        queueLevelVoiceAndMusic(level);
         showBanner("Loaded level " + level, new Color(166, 225, 255));
         pushHud();
     }
@@ -367,20 +373,23 @@ public class OreoCrushGame extends JPanel {
     }
 
     private BufferedImage loadBackgroundFor(int levelNumber) {
-        BufferedImage image = loadImage("/backgrounds/bg_level" + levelNumber + ".png");
-        if (image == null) {
-            image = loadImage("/backgrounds/bg_level1.png");
+        for (int bgLevel = Math.min(levelNumber, MAX_BACKGROUND_LEVEL); bgLevel >= 1; bgLevel--) {
+            BufferedImage image = loadImage("/backgrounds/bg_level" + bgLevel + ".png");
+            if (image != null) {
+                return image;
+            }
         }
-        return image;
+
+        return null;
     }
 
     private LevelConfig buildLevelConfig(int levelNumber) {
         int[][] blockers = generateStoneLayout(levelNumber);
 
         int colors = levelNumber <= 1 ? 3 : 4;
-        int target = 850 + (levelNumber * 340);
+        int target = 1000 + (levelNumber * 480);
         Objective objectiveForLevel;
-        int movesForLevel = 18 + Math.min(8, levelNumber / 2);
+        int movesForLevel = 17 + Math.min(6, levelNumber / 3);
 
         if (levelNumber == 1) {
             objectiveForLevel = new Objective(ObjectiveType.SCORE, 750, -1);
@@ -390,20 +399,21 @@ public class OreoCrushGame extends JPanel {
             int cycle = Math.floorMod(levelNumber - 2, 4);
             switch (cycle) {
                 case 0:
-                    objectiveForLevel = new Objective(ObjectiveType.SCORE, 900 + levelNumber * 380, -1);
-                    movesForLevel += 2;
+                    objectiveForLevel = new Objective(ObjectiveType.SCORE, 1200 + levelNumber * 480, -1);
+                    movesForLevel += 1;
                     break;
                 case 1:
-                    objectiveForLevel = new Objective(ObjectiveType.CLEAR_COLOR, 12 + levelNumber * 2, Math.floorMod(levelNumber, BASE_COLOR_COUNT));
+                    objectiveForLevel = new Objective(ObjectiveType.CLEAR_COLOR, 15 + levelNumber * 2, Math.floorMod(levelNumber, BASE_COLOR_COUNT));
                     break;
                 case 2:
-                    objectiveForLevel = new Objective(ObjectiveType.TRIGGER_SPECIALS, 2 + (levelNumber / 3), -1);
-                    target += 250;
+                    objectiveForLevel = new Objective(ObjectiveType.TRIGGER_SPECIALS, 3 + (levelNumber / 4), -1);
+                    movesForLevel += 2;
+                    target += 300;
                     break;
                 case 3:
                 default:
-                    objectiveForLevel = new Objective(ObjectiveType.SCORE, 950 + levelNumber * 420, -1);
-                    target += 300;
+                    objectiveForLevel = new Objective(ObjectiveType.SCORE, 1300 + levelNumber * 520, -1);
+                    target += 350;
                     break;
             }
         }
@@ -417,10 +427,10 @@ public class OreoCrushGame extends JPanel {
             return layout;
         }
 
-        int targetCount = Math.min(8, 1 + levelNumber);
-        if (levelNumber == 2) targetCount = 3;
-        if (levelNumber == 3) targetCount = 4;
-        if (levelNumber == 4) targetCount = 5;
+        int targetCount = Math.min(12, 2 + levelNumber);
+        if (levelNumber == 2) targetCount = 4;
+        if (levelNumber == 3) targetCount = 6;
+        if (levelNumber == 4) targetCount = 7;
 
         Random layoutRandom = new Random(97L * levelNumber + 13L);
         int placed = 0;
@@ -537,8 +547,11 @@ public class OreoCrushGame extends JPanel {
                     return;
                 }
 
-                int c = e.getX() / TILE_SIZE;
-                int r = e.getY() / TILE_SIZE;
+                float scale = getBoardScale();
+                int canvasX = (int) ((e.getX() - getBoardOffsetX()) / scale);
+                int canvasY = (int) ((e.getY() - getBoardOffsetY()) / scale);
+                int c = canvasX / TILE_SIZE;
+                int r = canvasY / TILE_SIZE;
 
                 if (!isInsideBoard(r, c)) return;
 
@@ -551,8 +564,11 @@ public class OreoCrushGame extends JPanel {
                     selected = null;
                     combo = 0;
                     consumeMove();
-                    startClear(buildActivationPayload(Collections.singletonList(new Activation(r, c, clicked.special, clicked.color)),
-                            actionTextFor(clicked.special)));
+                    ClearPayload tapPayload = buildActivationPayload(
+                            Collections.singletonList(new Activation(r, c, clicked.special, clicked.color)),
+                            actionTextFor(clicked.special));
+                    tapPayload.sfxHint = sfxForSpecial(clicked.special);
+                    startClear(tapPayload);
                     return;
                 }
 
@@ -636,12 +652,23 @@ public class OreoCrushGame extends JPanel {
             showBanner(payload.banner, new Color(255, 230, 166));
         }
 
-        if (payload.strongClear) {
+        if (payload.sfxHint != null) {
+            audio.playSfx(payload.sfxHint);
+        } else if (payload.strongClear) {
             audio.playSfx("/sfx/tnt.wav");
+        } else if (combo > 1) {
+            audio.playSfx("/music/sfxsound/combocombo.mp3");
+        } else {
+            audio.playSfx("/music/sfxsound/nomnom.mp3");
+        }
+        if (combo == 4) {
+            audio.playSfx("/music/sfxsound/yummypower.mp3");
+        }
+
+        if (payload.strongClear) {
             flashAlpha = 0.26f;
             triggerShake(10, 140);
         } else {
-            audio.playSfx("/sfx/swap.wav");
             flashAlpha = 0.14f;
         }
 
@@ -700,6 +727,8 @@ public class OreoCrushGame extends JPanel {
             return;
         }
 
+        tickDelayedMusicStart();
+
         switch (animState) {
             case SWAPPING:
                 tickSwap();
@@ -756,7 +785,7 @@ public class OreoCrushGame extends JPanel {
         if (!match.any) {
             triggerShake(6, 110);
             showBanner("No match. Try a setup move.", new Color(255, 204, 166));
-            audio.playSfx("/sfx/click.wav");
+            audio.playSfx("/music/sfxsound/oopsie.mp3");
             startSwap(swapAnim.a, swapAnim.b, true);
             return;
         }
@@ -809,14 +838,16 @@ public class OreoCrushGame extends JPanel {
         }
 
         if (!clearAnim.payload.specialSpawns.isEmpty()) {
+            audio.playSfx("/music/sfxsound/supercookie.mp3");
             showBanner(specialCreatedText(clearAnim.payload.specialSpawns.values()), new Color(255, 230, 166));
         }
 
         int blockerCellsCleared = damageBlockers(clearAnim.payload.clear);
+        int specialsSpawned = clearAnim.payload.specialSpawns.size();
         scoreThisLevel += Math.round((cleared * 24 + blockerCellsCleared * 75 + clearAnim.payload.specialTriggers * 80)
                 * (1f + Math.max(0, combo - 1) * 0.35f));
 
-        updateObjective(clearedColors, blockerCellsCleared, clearAnim.payload.specialTriggers);
+        updateObjective(clearedColors, blockerCellsCleared, clearAnim.payload.specialTriggers + specialsSpawned);
 
         if (objective.complete() && !levelSummary) {
             beginLevelSummary();
@@ -887,9 +918,12 @@ public class OreoCrushGame extends JPanel {
         bgFade = 0f;
         introPlayed = false;
         loopStarted = false;
+        transitionLevelLoaded = false;
         selected = null;
         hintMove = null;
         animState = AnimState.IDLE;
+        delayedMusicStartMs = -1L;
+        delayedMusicLevel = -1;
         audio.stopMusic();
     }
 
@@ -902,27 +936,41 @@ public class OreoCrushGame extends JPanel {
         }
 
         if (!introPlayed) {
-            audio.playSfx(introMusicPathFor(pendingLevel));
-            introPlayed = true;
-            return;
-        }
-
-        if (!loopStarted && dt >= FADE_OUT_MS + INTRO_DELAY_MS) {
             loadLevel(pendingLevel);
+            transitionLevelLoaded = true;
+            audio.playSfx(introMusicPathFor(pendingLevel));
             audio.playMusicLoop(loopMusicPathFor(level));
+            introPlayed = true;
             loopStarted = true;
             return;
         }
 
-        if (loopStarted) {
-            long fadeInDt = dt - (FADE_OUT_MS + INTRO_DELAY_MS);
+        if (transitionLevelLoaded) {
+            long fadeInDt = dt - FADE_OUT_MS;
             bgFade = 1f - clamp01(fadeInDt / (float) FADE_IN_MS);
             if (fadeInDt >= FADE_IN_MS) {
                 bgFade = 0f;
                 levelTransition = false;
                 pendingLevel = -1;
+                transitionLevelLoaded = false;
             }
         }
+    }
+
+    private void queueLevelVoiceAndMusic(int levelNumber) {
+        delayedMusicStartMs = -1L;
+        delayedMusicLevel = -1;
+        audio.playSfx(introMusicPathFor(levelNumber));
+        audio.playMusicLoop(loopMusicPathFor(levelNumber));
+    }
+
+    private void tickDelayedMusicStart() {
+        if (delayedMusicStartMs < 0L || delayedMusicLevel < 0) return;
+        if (nowMs < delayedMusicStartMs) return;
+
+        audio.playMusicLoop(loopMusicPathFor(delayedMusicLevel));
+        delayedMusicStartMs = -1L;
+        delayedMusicLevel = -1;
     }
 
     private void updateHint() {
@@ -1110,6 +1158,7 @@ public class OreoCrushGame extends JPanel {
             payload.specialTriggers = 2;
             payload.strongClear = true;
             payload.banner = "Double rainbow board wipe";
+            payload.sfxHint = "/music/sfxsound/raimbowcoookie2.mp3";
             return payload;
         }
 
@@ -1123,6 +1172,7 @@ public class OreoCrushGame extends JPanel {
             payload.clear[a.y][a.x] = true;
             payload.clear[b.y][b.x] = true;
             payload.strongClear = true;
+            payload.sfxHint = "/music/sfxsound/mixymixy.mp3";
             return payload;
         }
 
@@ -1142,6 +1192,7 @@ public class OreoCrushGame extends JPanel {
             }
 
             payload.strongClear = true;
+            payload.sfxHint = "/music/sfxsound/mixymixy.mp3";
             return payload;
         }
 
@@ -1151,6 +1202,7 @@ public class OreoCrushGame extends JPanel {
                 new Activation(specialPoint.y, specialPoint.x, specialPiece.special, specialPiece.color)),
                 "Special swap");
         payload.strongClear = true;
+        payload.sfxHint = sfxForSpecial(specialPiece.special);
         return payload;
     }
 
@@ -1186,8 +1238,12 @@ public class OreoCrushGame extends JPanel {
                     for (int r = 0; r < BOARD_SIZE; r++) {
                         for (int c = 0; c < BOARD_SIZE; c++) {
                             Piece piece = grid[r][c];
-                            if (piece != null && piece.color == color) {
+                            if (piece == null) continue;
+                            if (piece.color == color) {
                                 markTriggeredCell(payload, queue, r, c);
+                            } else if (piece.special == Special.RAINBOW) {
+                                // consume other rainbows so they can't stack up
+                                payload.clear[r][c] = true;
                             }
                         }
                     }
@@ -1301,7 +1357,7 @@ public class OreoCrushGame extends JPanel {
         levelSummary = true;
         summaryStartMs = nowMs;
         showBanner("Level complete", new Color(188, 255, 208));
-        audio.playSfx("/sfx/swap.wav");
+        audio.playSfx("/music/sfxsound/yaay.mp3");
     }
 
     private int calculateStars() {
@@ -1420,7 +1476,7 @@ public class OreoCrushGame extends JPanel {
         if (announce) {
             showBanner("Fresh shuffle. New lines, new specials.", new Color(166, 225, 255));
             triggerShake(8, 120);
-            audio.playSfx("/sfx/swap.wav");
+            audio.playSfx("/music/sfxsound/awnocookies.mp3");
         }
 
         animState = AnimState.IDLE;
@@ -1521,6 +1577,14 @@ public class OreoCrushGame extends JPanel {
         }
     }
 
+    private String sfxForSpecial(Special s) {
+        switch (s) {
+            case ROCKET_H: case ROCKET_V: return "/music/sfxsound/weerocket.mp3";
+            case RAINBOW: return "/music/sfxsound/raimbowcookie1.mp3";
+            default: return "/sfx/tnt.wav";
+        }
+    }
+
     private void triggerShake(int magnitude, int durationMs) {
         shakeMagnitude = magnitude;
         shakeUntilMs = nowMs + durationMs;
@@ -1556,13 +1620,27 @@ public class OreoCrushGame extends JPanel {
     }
 
     private String loopMusicPathFor(int levelNumber) {
-        return levelNumber <= 1 ? "/music/level1.wav" : "/music/level2.wav";
+        int clamped = Math.max(1, Math.min(levelNumber, 9));
+        return "/music/level" + clamped + ".mp3";
     }
 
     private String introMusicPathFor(int levelNumber) {
-        if (levelNumber <= 1) return "/music/level1_intro.wav";
-        if (levelNumber == 2) return "/music/level2_intro.wav";
-        return "/music/level3_intro.wav";
+        if (levelNumber <= 1) return "/music/LEVEL1VOICE.mp3";
+        if (levelNumber == 2) return "/music/LEVEL2VOICE.mp3";
+        if (levelNumber == 3) return "/music/LEVEL3VOICE.mp3";
+        if (levelNumber == 4) return "/music/LEVEL4VOICE.mp3";
+        if (levelNumber == 5) return "/music/LEVEL5VOICE.mp3";
+        if (levelNumber == 6) return "/music/LEVEL6VOICE.mp3";
+        if (levelNumber == 7) return "/music/LEVEL7VOICE.mp3";
+        if (levelNumber == 8) return "/music/LEVEL8VOICE.mp3";
+        return "/music/LEVEL9VOICE.mp3";
+    }
+
+    private int introDelayMsFor(int levelNumber) {
+        if (levelNumber <= 9) {
+            return 1500;
+        }
+        return INTRO_DELAY_MS;
     }
 
     private void pushHud() {
@@ -1593,6 +1671,18 @@ public class OreoCrushGame extends JPanel {
         }
     }
 
+    private float getBoardScale() {
+        return Math.min(getWidth(), getHeight()) / (float) CANVAS_SIZE;
+    }
+
+    private int getBoardOffsetX() {
+        return Math.max(0, (getWidth() - Math.round(CANVAS_SIZE * getBoardScale())) / 2);
+    }
+
+    private int getBoardOffsetY() {
+        return Math.max(0, (getHeight() - Math.round(CANVAS_SIZE * getBoardScale())) / 2);
+    }
+
     @Override
     protected void paintComponent(Graphics g) {
         super.paintComponent(g);
@@ -1602,12 +1692,18 @@ public class OreoCrushGame extends JPanel {
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
 
+        // Background always fills the whole panel
         if (bgImage != null) {
             g2.drawImage(bgImage, 0, 0, getWidth(), getHeight(), null);
         } else {
             g2.setPaint(new GradientPaint(0, 0, new Color(18, 29, 52), 0, getHeight(), new Color(7, 12, 25)));
             g2.fillRect(0, 0, getWidth(), getHeight());
         }
+
+        // Scale and center the game board
+        float scale = getBoardScale();
+        g2.translate(getBoardOffsetX(), getBoardOffsetY());
+        g2.scale(scale, scale);
 
         if (shakeUntilMs > nowMs) {
             int dx = random.nextInt(shakeMagnitude * 2 + 1) - shakeMagnitude;
@@ -1643,7 +1739,7 @@ public class OreoCrushGame extends JPanel {
             Composite old = g2.getComposite();
             g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, clamp01(bgFade)));
             g2.setColor(Color.BLACK);
-            g2.fillRect(0, 0, getWidth(), getHeight());
+            g2.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
             g2.setComposite(old);
         }
 
@@ -1723,6 +1819,17 @@ public class OreoCrushGame extends JPanel {
             return;
         }
 
+        if (piece.special == Special.BOMB) {
+            if (bombStamp != null) {
+                g2.drawImage(bombStamp, drawX, drawY, size, size, null);
+            } else {
+                g2.setColor(new Color(247, 246, 244));
+                g2.fillOval(drawX, drawY, size, size);
+                drawBombOverlay(g2, drawX, drawY, size);
+            }
+            return;
+        }
+
         BufferedImage image = piece.color >= 0 && piece.color < cookieImages.length ? cookieImages[piece.color] : null;
         if (image != null) {
             g2.drawImage(image, drawX, drawY, size, size, null);
@@ -1735,9 +1842,6 @@ public class OreoCrushGame extends JPanel {
             case ROCKET_H:
             case ROCKET_V:
                 drawRocketOverlay(g2, piece.special, drawX, drawY, size);
-                break;
-            case BOMB:
-                drawBombOverlay(g2, drawX, drawY, size);
                 break;
             case NONE:
             case RAINBOW:
@@ -1814,40 +1918,40 @@ public class OreoCrushGame extends JPanel {
 
     private void drawGameOver(Graphics2D g2) {
         g2.setColor(new Color(10, 16, 28, 225));
-        g2.fillRect(0, 0, getWidth(), getHeight());
+        g2.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
         g2.setColor(new Color(248, 250, 252));
         g2.setFont(getFont().deriveFont(Font.BOLD, 30f));
-        drawCentered(g2, "Out of moves", getWidth() / 2, getHeight() / 2 - 24);
+        drawCentered(g2, "Out of moves", CANVAS_SIZE / 2, CANVAS_SIZE / 2 - 24);
 
         g2.setFont(getFont().deriveFont(Font.PLAIN, 18f));
-        drawCentered(g2, "Click anywhere to retry level " + level + ".", getWidth() / 2, getHeight() / 2 + 10);
+        drawCentered(g2, "Click anywhere to retry level " + level + ".", CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 10);
     }
 
     private void drawLevelSummary(Graphics2D g2) {
         g2.setColor(new Color(6, 10, 18, 220));
-        g2.fillRoundRect(38, 110, getWidth() - 76, 210, 24, 24);
+        g2.fillRoundRect(38, 110, CANVAS_SIZE - 76, 210, 24, 24);
 
         g2.setColor(new Color(244, 247, 252));
         g2.setFont(getFont().deriveFont(Font.BOLD, 26f));
-        drawCentered(g2, "Level " + level + " cleared", getWidth() / 2, 156);
+        drawCentered(g2, "Level " + level + " cleared", CANVAS_SIZE / 2, 156);
 
         g2.setFont(getFont().deriveFont(Font.PLAIN, 16f));
-        drawCentered(g2, "Bonus: +" + summaryBonus, getWidth() / 2, 188);
-        drawCentered(g2, "Best combo: x" + Math.max(1, bestCombo), getWidth() / 2, 212);
-        drawCentered(g2, starsLabel(summaryStars), getWidth() / 2, 246);
-        drawCentered(g2, "Next level loading...", getWidth() / 2, 282);
+        drawCentered(g2, "Bonus: +" + summaryBonus, CANVAS_SIZE / 2, 188);
+        drawCentered(g2, "Best combo: x" + Math.max(1, bestCombo), CANVAS_SIZE / 2, 212);
+        drawCentered(g2, starsLabel(summaryStars), CANVAS_SIZE / 2, 246);
+        drawCentered(g2, "Next level loading...", CANVAS_SIZE / 2, 282);
     }
 
     private void drawBanner(Graphics2D g2) {
-        int bannerWidth = getWidth() - 36;
+        int bannerWidth = CANVAS_SIZE - 36;
         int x = 18;
         int y = 18;
         g2.setColor(new Color(6, 10, 18, 190));
         g2.fillRoundRect(x, y, bannerWidth, 42, 20, 20);
         g2.setColor(bannerColor);
         g2.setFont(getFont().deriveFont(Font.BOLD, 15f));
-        drawCentered(g2, bannerText, getWidth() / 2, y + 27);
+        drawCentered(g2, bannerText, CANVAS_SIZE / 2, y + 27);
     }
 
     private boolean hasSpecialsOnBoard() {
