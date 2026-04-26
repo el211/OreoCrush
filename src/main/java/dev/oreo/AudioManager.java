@@ -64,7 +64,7 @@ public class AudioManager {
 
     public void playSfx(String resourcePath) {
         if (resourcePath != null && resourcePath.toLowerCase().endsWith(".mp3")) {
-            playMp3Voice(resourcePath);
+            spawnMp3Sfx(resourcePath);
             return;
         }
 
@@ -77,6 +77,32 @@ public class AudioManager {
             applyVolume(clip, sfxVolumeDb);
             clip.start();
         } catch (Exception ignored) {}
+    }
+
+    public void playVoice(String resourcePath) {
+        playMp3Voice(resourcePath);
+    }
+
+    private void spawnMp3Sfx(String resourcePath) {
+        Thread t = new Thread(() -> {
+            InputStream raw = null;
+            try {
+                raw = getClass().getResourceAsStream(resourcePath);
+                if (raw == null) {
+                    System.err.println("Missing audio: " + resourcePath);
+                    return;
+                }
+                AdvancedPlayer player = new AdvancedPlayer(new BufferedInputStream(raw));
+                player.play();
+            } catch (JavaLayerException ignored) {
+            } catch (Exception e) {
+                System.err.println("MP3 sfx error: " + resourcePath);
+            } finally {
+                if (raw != null) try { raw.close(); } catch (Exception ignored) {}
+            }
+        }, "oreo-mp3-sfx");
+        t.setDaemon(true);
+        t.start();
     }
 
     private Clip loadClip(String resourcePath) {

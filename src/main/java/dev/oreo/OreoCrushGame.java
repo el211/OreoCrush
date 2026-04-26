@@ -938,7 +938,7 @@ public class OreoCrushGame extends JPanel {
         if (!introPlayed) {
             loadLevel(pendingLevel);
             transitionLevelLoaded = true;
-            audio.playSfx(introMusicPathFor(pendingLevel));
+            audio.playVoice(introMusicPathFor(pendingLevel));
             audio.playMusicLoop(loopMusicPathFor(level));
             introPlayed = true;
             loopStarted = true;
@@ -960,7 +960,7 @@ public class OreoCrushGame extends JPanel {
     private void queueLevelVoiceAndMusic(int levelNumber) {
         delayedMusicStartMs = -1L;
         delayedMusicLevel = -1;
-        audio.playSfx(introMusicPathFor(levelNumber));
+        audio.playVoice(introMusicPathFor(levelNumber));
         audio.playMusicLoop(loopMusicPathFor(levelNumber));
     }
 
