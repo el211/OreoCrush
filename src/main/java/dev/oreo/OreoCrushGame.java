@@ -11,6 +11,7 @@ import java.awt.image.BufferedImage;
 import java.io.InputStream;
 import java.util.*;
 import java.util.List;
+import java.util.function.IntConsumer;
 import java.util.prefs.Preferences;
 
 public class OreoCrushGame extends JPanel {
@@ -201,7 +202,41 @@ public class OreoCrushGame extends JPanel {
         }
     }
 
-    private final Random random = new Random();
+    private static class FloatingText {
+        final String text;
+        final float x;
+        final float y;
+        final Color color;
+        final long startMs;
+
+        FloatingText(String text, float x, float y, Color color, long startMs) {
+            this.text = text;
+            this.x = x;
+            this.y = y;
+            this.color = color;
+            this.startMs = startMs;
+        }
+    }
+
+    private static class Spark {
+        final float x;
+        final float y;
+        final float dx;
+        final float dy;
+        final Color color;
+        final long startMs;
+
+        Spark(float x, float y, float dx, float dy, Color color, long startMs) {
+            this.x = x;
+            this.y = y;
+            this.dx = dx;
+            this.dy = dy;
+            this.color = color;
+            this.startMs = startMs;
+        }
+    }
+
+    private Random random = new Random();
     private final AudioManager audio = new AudioManager();
     private final Preferences prefs = Preferences.userNodeForPackage(OreoCrushGame.class);
 
@@ -218,6 +253,8 @@ public class OreoCrushGame extends JPanel {
 
     private Point selected;
     private MoveHint hintMove;
+    private final List<FloatingText> floatingTexts = new ArrayList<FloatingText>();
+    private final List<Spark> sparks = new ArrayList<Spark>();
 
     private final Timer timer;
     private long nowMs;
@@ -262,6 +299,15 @@ public class OreoCrushGame extends JPanel {
     private int shakeMagnitude;
     private float flashAlpha;
 
+    private boolean multiplayerMode;
+    private int multiplayerTarget;
+    private String multiplayerOpponent = "";
+    private int multiplayerOpponentScore;
+    private boolean multiplayerEnded;
+    private String multiplayerWinner;
+    private IntConsumer scoreListener;
+    private int lastScoreSent = -1;
+
     public OreoCrushGame() {
         setPreferredSize(new Dimension(CANVAS_SIZE, CANVAS_SIZE));
         setMinimumSize(new Dimension(CANVAS_SIZE, CANVAS_SIZE));
@@ -292,6 +338,10 @@ public class OreoCrushGame extends JPanel {
         return unlockedLevel;
     }
 
+    public int getScoreThisLevel() {
+        return scoreThisLevel;
+    }
+
     public void setUiStateListener(Runnable uiStateListener) {
         this.uiStateListener = uiStateListener;
         pushHud();
@@ -300,6 +350,82 @@ public class OreoCrushGame extends JPanel {
     public void setScoreboard(ScoreboardPanel scoreboard) {
         this.scoreboard = scoreboard;
         pushHud();
+    }
+
+    public void setScoreListener(IntConsumer listener) {
+        this.scoreListener = listener;
+    }
+
+    public boolean isMultiplayerMode() {
+        return multiplayerMode;
+    }
+
+    public String getMultiplayerOpponent() {
+        return multiplayerOpponent;
+    }
+
+    public void startMultiplayerMatch(long seed, int targetScoreOverride, String opponentName) {
+        multiplayerMode = true;
+        multiplayerTarget = targetScoreOverride;
+        multiplayerOpponent = opponentName == null ? "" : opponentName;
+        multiplayerOpponentScore = 0;
+        multiplayerEnded = false;
+        multiplayerWinner = null;
+        lastScoreSent = -1;
+
+        random = new Random(seed);
+
+        levelTransition = false;
+        levelSummary = false;
+        pendingLevel = -1;
+        audio.stopMusic();
+        loadLevel(1);
+        if (multiplayerTarget > 0) {
+            targetScore = multiplayerTarget;
+        }
+        moves = Integer.MAX_VALUE / 2;
+        showBanner("Vs " + multiplayerOpponent + " — first to " + targetScore, new Color(255, 200, 140));
+        pushHud();
+    }
+
+    public void setOpponentScore(int score) {
+        multiplayerOpponentScore = score;
+        pushHud();
+    }
+
+    public void endMultiplayerMatch(String winner, int yourScore, int opponentScore, String reason) {
+        multiplayerEnded = true;
+        multiplayerWinner = winner;
+        multiplayerOpponentScore = opponentScore;
+        boolean won = winner != null && winner.equals(localUsernameForBanner());
+        String reasonNote = "OPPONENT_LEFT".equals(reason) ? " (opponent left)" : "";
+        showBanner((won ? "You win!" : "You lose") + reasonNote
+                + " — " + yourScore + " vs " + opponentScore, won
+                ? new Color(180, 255, 200)
+                : new Color(255, 180, 180));
+        pushHud();
+    }
+
+    private String localUsernameForBanner() {
+        return localUsername == null ? "" : localUsername;
+    }
+
+    private String localUsername;
+
+    public void setLocalUsername(String name) {
+        this.localUsername = name;
+    }
+
+    public void exitMultiplayerMode() {
+        multiplayerMode = false;
+        multiplayerEnded = false;
+        multiplayerTarget = 0;
+        multiplayerOpponent = "";
+        multiplayerOpponentScore = 0;
+        multiplayerWinner = null;
+        lastScoreSent = -1;
+        scoreListener = null;
+        random = new Random();
     }
 
     public void restartCurrentLevel() {
@@ -363,6 +489,8 @@ public class OreoCrushGame extends JPanel {
         currentStars = 0;
         selected = null;
         hintMove = null;
+        floatingTexts.clear();
+        sparks.clear();
         animState = AnimState.IDLE;
         flashAlpha = 0f;
         bgImage = loadBackgroundFor(level);
@@ -412,7 +540,8 @@ public class OreoCrushGame extends JPanel {
                     break;
                 case 3:
                 default:
-                    objectiveForLevel = new Objective(ObjectiveType.SCORE, 1300 + levelNumber * 520, -1);
+                    objectiveForLevel = new Objective(ObjectiveType.CLEAR_BLOCKERS, Math.max(1, countBlockerCells(blockers)), -1);
+                    movesForLevel += 3;
                     target += 350;
                     break;
             }
@@ -728,6 +857,7 @@ public class OreoCrushGame extends JPanel {
         }
 
         tickDelayedMusicStart();
+        tickFloatingFeedback();
 
         switch (animState) {
             case SWAPPING:
@@ -743,6 +873,22 @@ public class OreoCrushGame extends JPanel {
             default:
                 updateHint();
                 break;
+        }
+    }
+
+    private void tickFloatingFeedback() {
+        for (Iterator<FloatingText> it = floatingTexts.iterator(); it.hasNext();) {
+            FloatingText text = it.next();
+            if (nowMs - text.startMs > 900) {
+                it.remove();
+            }
+        }
+
+        for (Iterator<Spark> it = sparks.iterator(); it.hasNext();) {
+            Spark spark = it.next();
+            if (nowMs - spark.startMs > 520) {
+                it.remove();
+            }
         }
     }
 
@@ -844,8 +990,10 @@ public class OreoCrushGame extends JPanel {
 
         int blockerCellsCleared = damageBlockers(clearAnim.payload.clear);
         int specialsSpawned = clearAnim.payload.specialSpawns.size();
-        scoreThisLevel += Math.round((cleared * 24 + blockerCellsCleared * 75 + clearAnim.payload.specialTriggers * 80)
+        int pointsEarned = Math.round((cleared * 24 + blockerCellsCleared * 75 + clearAnim.payload.specialTriggers * 80)
                 * (1f + Math.max(0, combo - 1) * 0.35f));
+        scoreThisLevel += pointsEarned;
+        spawnClearFeedback(clearAnim.payload.clear, pointsEarned, blockerCellsCleared);
 
         updateObjective(clearedColors, blockerCellsCleared, clearAnim.payload.specialTriggers + specialsSpawned);
 
@@ -1162,6 +1310,15 @@ public class OreoCrushGame extends JPanel {
             return payload;
         }
 
+        if ((first.special == Special.RAINBOW && second.special != Special.NONE)
+                || (second.special == Special.RAINBOW && first.special != Special.NONE)) {
+            Piece rainbow = first.special == Special.RAINBOW ? first : second;
+            Piece other = first.special == Special.RAINBOW ? second : first;
+            Point rainbowPoint = first.special == Special.RAINBOW ? a : b;
+            Point otherPoint = first.special == Special.RAINBOW ? b : a;
+            return buildRainbowSpecialPayload(rainbowPoint, otherPoint, rainbow, other);
+        }
+
         if (first.special == Special.RAINBOW || second.special == Special.RAINBOW) {
             Piece other = first.special == Special.RAINBOW ? second : first;
             int rainbowRow = first.special == Special.RAINBOW ? a.y : b.y;
@@ -1185,10 +1342,13 @@ public class OreoCrushGame extends JPanel {
             if (first.special == Special.BOMB && second.special == Special.BOMB) {
                 markArea(payload, null, a.y, a.x, 2);
                 markArea(payload, null, b.y, b.x, 2);
+                payload.banner = "Double bomb blast";
             } else if ((isRocket(first.special) && second.special == Special.BOMB)
                     || (isRocket(second.special) && first.special == Special.BOMB)) {
-                markPlus(payload, null, a.y, a.x, 1);
-                markPlus(payload, null, b.y, b.x, 1);
+                Special rocket = isRocket(first.special) ? first.special : second.special;
+                markRocketBombCombo(payload, rocket, a.y, a.x);
+                markRocketBombCombo(payload, rocket, b.y, b.x);
+                payload.banner = "Mega rocket blast";
             }
 
             payload.strongClear = true;
@@ -1204,6 +1364,65 @@ public class OreoCrushGame extends JPanel {
         payload.strongClear = true;
         payload.sfxHint = sfxForSpecial(specialPiece.special);
         return payload;
+    }
+
+    private ClearPayload buildRainbowSpecialPayload(Point rainbowPoint, Point specialPoint, Piece rainbow, Piece specialPiece) {
+        ClearPayload payload = new ClearPayload();
+        int targetColor = specialPiece.color >= 0 ? specialPiece.color : mostCommonColorOnBoard();
+        payload.clear[rainbowPoint.y][rainbowPoint.x] = true;
+        payload.clear[specialPoint.y][specialPoint.x] = true;
+        payload.specialTriggers = 1;
+        payload.strongClear = true;
+        payload.sfxHint = "/music/sfxsound/mixymixy.mp3";
+
+        int affected = 0;
+        for (int r = 0; r < BOARD_SIZE; r++) {
+            for (int c = 0; c < BOARD_SIZE; c++) {
+                Piece piece = grid[r][c];
+                if (piece == null || piece.color != targetColor) continue;
+                affected++;
+                if (specialPiece.special == Special.BOMB) {
+                    markArea(payload, null, r, c, 1);
+                } else if (specialPiece.special == Special.ROCKET_H || specialPiece.special == Special.ROCKET_V) {
+                    if (affected % 2 == 0) {
+                        for (int cc = 0; cc < BOARD_SIZE; cc++) markTriggeredCell(payload, null, r, cc);
+                    } else {
+                        for (int rr = 0; rr < BOARD_SIZE; rr++) markTriggeredCell(payload, null, rr, c);
+                    }
+                } else {
+                    markTriggeredCell(payload, null, r, c);
+                }
+            }
+        }
+
+        if (specialPiece.special == Special.BOMB) {
+            payload.banner = "Rainbow bomb blast";
+        } else if (isRocket(specialPiece.special)) {
+            payload.banner = "Rainbow rocket storm";
+        } else {
+            payload.banner = "Rainbow color clear";
+        }
+
+        payload.specialTriggers += Math.max(1, affected / 3);
+        return payload;
+    }
+
+    private void markRocketBombCombo(ClearPayload payload, Special rocket, int row, int col) {
+        if (rocket == Special.ROCKET_H) {
+            for (int r = row - 1; r <= row + 1; r++) {
+                if (!isInsideBoard(r, col)) continue;
+                for (int c = 0; c < BOARD_SIZE; c++) {
+                    markTriggeredCell(payload, null, r, c);
+                }
+            }
+        } else {
+            for (int c = col - 1; c <= col + 1; c++) {
+                if (!isInsideBoard(row, c)) continue;
+                for (int r = 0; r < BOARD_SIZE; r++) {
+                    markTriggeredCell(payload, null, r, c);
+                }
+            }
+        }
     }
 
     private ClearPayload buildActivationPayload(Collection<Activation> seeds, String banner) {
@@ -1309,7 +1528,18 @@ public class OreoCrushGame extends JPanel {
     }
 
     private int damageBlockers(boolean[][] clearMask) {
-        return 0;
+        int destroyed = 0;
+        for (int r = 0; r < BOARD_SIZE; r++) {
+            for (int c = 0; c < BOARD_SIZE; c++) {
+                if (blockerLayers[r][c] <= 0 || !adjacentToClear(clearMask, r, c)) continue;
+                blockerLayers[r][c]--;
+                if (blockerLayers[r][c] <= 0) {
+                    destroyed++;
+                    spawnCellSparks(r, c, new Color(205, 225, 232));
+                }
+            }
+        }
+        return destroyed;
     }
 
     private boolean adjacentToClear(boolean[][] clearMask, int row, int col) {
@@ -1321,6 +1551,46 @@ public class OreoCrushGame extends JPanel {
             }
         }
         return false;
+    }
+
+    private void spawnClearFeedback(boolean[][] clearMask, int pointsEarned, int blockerCellsCleared) {
+        int count = 0;
+        float sumX = 0f;
+        float sumY = 0f;
+
+        for (int r = 0; r < BOARD_SIZE; r++) {
+            for (int c = 0; c < BOARD_SIZE; c++) {
+                if (!clearMask[r][c]) continue;
+                count++;
+                sumX += c * TILE_SIZE + TILE_SIZE / 2f;
+                sumY += r * TILE_SIZE + TILE_SIZE / 2f;
+                Color color = blockerCellsCleared > 0
+                        ? new Color(210, 235, 255)
+                        : new Color(255, 235, 150);
+                spawnCellSparks(r, c, color);
+            }
+        }
+
+        if (count > 0 && pointsEarned > 0) {
+            String text = "+" + pointsEarned;
+            if (combo > 1) text += " x" + combo;
+            floatingTexts.add(new FloatingText(text, sumX / count, sumY / count,
+                    combo > 1 ? new Color(166, 255, 214) : new Color(255, 241, 184), nowMs));
+        }
+    }
+
+    private void spawnCellSparks(int row, int col, Color color) {
+        float cx = col * TILE_SIZE + TILE_SIZE / 2f;
+        float cy = row * TILE_SIZE + TILE_SIZE / 2f;
+        for (int i = 0; i < 5; i++) {
+            double angle = random.nextDouble() * Math.PI * 2.0;
+            float speed = 18f + random.nextFloat() * 24f;
+            sparks.add(new Spark(cx, cy,
+                    (float) Math.cos(angle) * speed,
+                    (float) Math.sin(angle) * speed,
+                    color,
+                    nowMs));
+        }
     }
 
     private void updateObjective(int[] clearedColors, int blockerCellsCleared, int specialTriggers) {
@@ -1343,6 +1613,7 @@ public class OreoCrushGame extends JPanel {
 
     private void beginLevelSummary() {
         if (levelSummary) return;
+        if (multiplayerMode) return;
 
         summaryBonus = moves * 75 + bestCombo * 40;
         scoreThisLevel += summaryBonus;
@@ -1645,6 +1916,27 @@ public class OreoCrushGame extends JPanel {
 
     private void pushHud() {
         if (scoreboard != null) {
+            String status;
+            if (multiplayerMode) {
+                String oppLabel = (multiplayerOpponent == null || multiplayerOpponent.isEmpty())
+                        ? "Opponent" : multiplayerOpponent;
+                if (multiplayerEnded) {
+                    boolean won = multiplayerWinner != null && multiplayerWinner.equals(localUsername);
+                    status = (won ? "Victory!" : "Defeat — " + (multiplayerWinner == null ? "?" : multiplayerWinner) + " wins")
+                            + "  ||  " + oppLabel + ": " + multiplayerOpponentScore;
+                } else {
+                    status = "Vs " + oppLabel + ": " + multiplayerOpponentScore
+                            + "  ||  First to " + targetScore;
+                    if (bannerUntilMs > nowMs) status = bannerText + "  ||  " + status;
+                }
+            } else {
+                status = bannerUntilMs > nowMs
+                        ? bannerText
+                        : hasSpecialsOnBoard()
+                        ? "Arrow cookies are rockets. Click any glowing special cookie."
+                        : "Best score: " + getBestScore(level);
+            }
+
             scoreboard.setStats(new GameStats(
                     level,
                     moves,
@@ -1658,12 +1950,13 @@ public class OreoCrushGame extends JPanel {
                     getBestStars(level),
                     unlockedLevel,
                     getTotalStars(),
-                    bannerUntilMs > nowMs
-                            ? bannerText
-                            : hasSpecialsOnBoard()
-                            ? "Arrow cookies are rockets. Click any glowing special cookie."
-                            : "Best score: " + getBestScore(level)
+                    status
             ));
+        }
+
+        if (multiplayerMode && !multiplayerEnded && scoreListener != null && scoreThisLevel != lastScoreSent) {
+            lastScoreSent = scoreThisLevel;
+            scoreListener.accept(scoreThisLevel);
         }
 
         if (uiStateListener != null) {
@@ -1713,6 +2006,7 @@ public class OreoCrushGame extends JPanel {
 
         drawBoard(g2);
         drawPieces(g2);
+        drawFloatingFeedback(g2);
         drawSelectionAndHints(g2);
 
         if (flashAlpha > 0f) {
@@ -1906,6 +2200,35 @@ public class OreoCrushGame extends JPanel {
         }
     }
 
+    private void drawFloatingFeedback(Graphics2D g2) {
+        for (Spark spark : sparks) {
+            float t = clamp01((nowMs - spark.startMs) / 520f);
+            float alpha = 1f - t;
+            float x = spark.x + spark.dx * t;
+            float y = spark.y + spark.dy * t + 20f * t * t;
+            Composite old = g2.getComposite();
+            g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, alpha));
+            g2.setColor(spark.color);
+            int size = Math.max(2, Math.round(6f * (1f - t)));
+            g2.fillOval(Math.round(x) - size / 2, Math.round(y) - size / 2, size, size);
+            g2.setComposite(old);
+        }
+
+        g2.setFont(getFont().deriveFont(Font.BOLD, 18f));
+        for (FloatingText text : floatingTexts) {
+            float t = clamp01((nowMs - text.startMs) / 900f);
+            float alpha = 1f - t;
+            int y = Math.round(text.y - 34f * t);
+            Composite old = g2.getComposite();
+            g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, alpha));
+            g2.setColor(new Color(8, 12, 22, Math.round(160f * alpha)));
+            drawCentered(g2, text.text, Math.round(text.x) + 1, y + 1);
+            g2.setColor(text.color);
+            drawCentered(g2, text.text, Math.round(text.x), y);
+            g2.setComposite(old);
+        }
+    }
+
     private void drawCellOutline(Graphics2D g2, int col, int row, Color color, float thickness) {
         int x = col * TILE_SIZE;
         int y = row * TILE_SIZE;
@@ -1939,7 +2262,7 @@ public class OreoCrushGame extends JPanel {
         g2.setFont(getFont().deriveFont(Font.PLAIN, 16f));
         drawCentered(g2, "Bonus: +" + summaryBonus, CANVAS_SIZE / 2, 188);
         drawCentered(g2, "Best combo: x" + Math.max(1, bestCombo), CANVAS_SIZE / 2, 212);
-        drawCentered(g2, starsLabel(summaryStars), CANVAS_SIZE / 2, 246);
+        drawStars(g2, CANVAS_SIZE / 2 - 48, 232, summaryStars, 24);
         drawCentered(g2, "Next level loading...", CANVAS_SIZE / 2, 282);
     }
 
@@ -1990,5 +2313,26 @@ public class OreoCrushGame extends JPanel {
             sb.append(i < starCount ? "[*]" : "[ ]");
         }
         return sb.toString();
+    }
+
+    private void drawStars(Graphics2D g2, int x, int y, int count, int size) {
+        for (int i = 0; i < 3; i++) {
+            Shape star = starShape(x + i * (size + 12) + size / 2f, y + size / 2f, size / 2f, size / 4.5f);
+            g2.setColor(i < count ? new Color(255, 218, 92) : new Color(255, 255, 255, 65));
+            g2.fill(star);
+            g2.setColor(new Color(70, 45, 10, 140));
+            g2.draw(star);
+        }
+    }
+
+    private Shape starShape(float cx, float cy, float outer, float inner) {
+        Polygon polygon = new Polygon();
+        for (int i = 0; i < 10; i++) {
+            double angle = -Math.PI / 2.0 + i * Math.PI / 5.0;
+            float radius = (i % 2 == 0) ? outer : inner;
+            polygon.addPoint(Math.round(cx + (float) Math.cos(angle) * radius),
+                    Math.round(cy + (float) Math.sin(angle) * radius));
+        }
+        return polygon;
     }
 }

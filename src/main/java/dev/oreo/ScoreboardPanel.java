@@ -75,8 +75,10 @@ public class ScoreboardPanel extends JPanel {
         g2.setColor(new Color(220, 228, 238));
         g2.drawString("Combo: x" + Math.max(1, stats.combo), x, 356);
         g2.drawString("Best combo: x" + Math.max(1, stats.bestCombo), x, 378);
-        g2.drawString("Stars this run: " + stars(stats.stars), x, 400);
-        g2.drawString("Best level stars: " + stars(stats.bestStars), x, 422);
+        g2.drawString("Stars this run:", x, 400);
+        drawStars(g2, x + 102, 385, stats.stars, 16);
+        g2.drawString("Best level stars:", x, 422);
+        drawStars(g2, x + 118, 407, stats.bestStars, 16);
         g2.drawString("Total stars: " + stats.totalStars, x, 444);
 
         if (stats.statusText != null && !stats.statusText.isEmpty()) {
@@ -118,12 +120,25 @@ public class ScoreboardPanel extends JPanel {
         }
     }
 
-    private String stars(int count) {
-        StringBuilder sb = new StringBuilder();
+    private void drawStars(Graphics2D g2, int x, int y, int count, int size) {
         for (int i = 0; i < 3; i++) {
-            sb.append(i < count ? "[*]" : "[ ]");
+            Shape star = starShape(x + i * (size + 7) + size / 2f, y + size / 2f, size / 2f, size / 4.5f);
+            g2.setColor(i < count ? new Color(255, 218, 92) : new Color(255, 255, 255, 55));
+            g2.fill(star);
+            g2.setColor(new Color(40, 30, 16, 150));
+            g2.draw(star);
         }
-        return sb.toString();
+    }
+
+    private Shape starShape(float cx, float cy, float outer, float inner) {
+        Polygon polygon = new Polygon();
+        for (int i = 0; i < 10; i++) {
+            double angle = -Math.PI / 2.0 + i * Math.PI / 5.0;
+            float radius = i % 2 == 0 ? outer : inner;
+            polygon.addPoint(Math.round(cx + (float) Math.cos(angle) * radius),
+                    Math.round(cy + (float) Math.sin(angle) * radius));
+        }
+        return polygon;
     }
 
     private BufferedImage loadImage(String resourcePath) {
