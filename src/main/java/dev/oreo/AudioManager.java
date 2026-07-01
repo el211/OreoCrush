@@ -7,11 +7,13 @@ import javax.sound.sampled.*;
 import java.io.BufferedInputStream;
 import java.io.InputStream;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class AudioManager {
 
     private final Map<String, Clip> cache = new ConcurrentHashMap<>();
+    private final Set<String> failedAudio = ConcurrentHashMap.newKeySet();
     private Clip musicClip;
     private Mp3Playback mp3Music;
     private Mp3Playback mp3Voice;
@@ -106,6 +108,7 @@ public class AudioManager {
     }
 
     private Clip loadClip(String resourcePath) {
+        if (failedAudio.contains(resourcePath)) return null;
         try {
             Clip cached = cache.get(resourcePath);
             if (cached != null && cached.isOpen()) return cached;
@@ -122,8 +125,8 @@ public class AudioManager {
             cache.put(resourcePath, clip);
             return clip;
         } catch (Exception e) {
-            System.err.println("Audio load failed: " + resourcePath);
-            e.printStackTrace();
+            failedAudio.add(resourcePath);
+            System.err.println("Audio skipped: " + resourcePath + " (" + e.getClass().getSimpleName() + ")");
             return null;
         }
     }
