@@ -36,3 +36,8 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+### jMonkeyEngine SDK — commit only build-essential jars, not the bulky docs/sources ###
+jME3.9.0-stable/javadoc/
+jME3.9.0-stable/sources/
+jME3.9.0-stable/opt/
